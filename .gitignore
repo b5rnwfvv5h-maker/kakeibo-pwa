@@ -1,0 +1,4 @@
+*.json
+*.zip
+*.tar.gz
+.DS_Store
