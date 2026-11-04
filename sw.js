@@ -1,4 +1,4 @@
-const CACHE='kakeibo-v13-shell-1';
+const CACHE='kakeibo-v14-shell-2';
 const ASSETS=['./','./index.html','./app.js','./core.js','./analytics.js','./storage.js','./migrate.js','./style.css','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));
 // Activate after old tabs close; never mix old JS and a new accounting engine.

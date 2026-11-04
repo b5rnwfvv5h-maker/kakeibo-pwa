@@ -23,7 +23,7 @@ export function validate(s){
  check(s&&s.version===VERSION,'対応するv1.1バックアップではありません');
  for(const k of ['records','rates','settlements','audit'])check(Array.isArray(s[k])&&s[k].length<=20000,`${k} が不正です`);
  check(s.settings&&typeof s.settings==='object','初期設定が必要です');const t=s.settings;date(t.baseline);num(t.bank,-LIMIT);num(t.paypay);num(t.savings);num(t.foodBudget);check(typeof t.includeBudget==='boolean','予算設定が不正です');check(Array.isArray(t.openingCards)&&t.openingCards.length<=120,'開始時請求が不正です');
- validateFixed(s);const oms=new Set();for(const x of t.openingCards){ym(x.month);num(x.amount);check(!oms.has(x.month),'開始時請求月が重複しています');oms.add(x.month);check(x.month>=month(t.baseline),'開始時請求月が基準日前です')}
+ validatePlanning(s);validateFixed(s);const oms=new Set();for(const x of t.openingCards){ym(x.month);num(x.amount);check(!oms.has(x.month),'開始時請求月が重複しています');oms.add(x.month);check(x.month>=month(t.baseline),'開始時請求月が基準日前です')}
  const ds=new Set();for(const r of s.rates){date(r.from);num(r.hourly,1,100000);check(!ds.has(r.from),'時給の発効日が重複しています');ds.add(r.from)}
  const ids=new Set();for(const r of s.records){str(r.id,80);check(/^[\w-]+$/.test(r.id)&&!ids.has(r.id),'記録IDが不正・重複しています');ids.add(r.id);date(r.date);check(r.date>=t.baseline,'基準日前の記録があります');str(r.label);check(['expense','refund','claim','income','adjust','work'].includes(r.kind),'記録種別が不正です');
  if(r.kind==='work'){num(r.minutes,1,1440);check(rateAt(s,r.date)>0,'勤務日に適用する時給がありません')}
@@ -44,6 +44,7 @@ export function budget(s,m){let food=({'2026-11':26000,'2026-12':28500,'2027-01'
 export function totals(s,m){const t={};for(const r of s.records.filter(r=>r.kind==='expense'&&month(r.date)===m))t[r.category]=(t[r.category]||0)+r.amount-r.share;return t}
 export function forecast(s,through){date(through);const t=s.settings;let bank=t.bank,paypay=t.paypay,auto=0;const ev=[];const push=(d,kind,amount,label)=>{if(d>=t.baseline&&d<=through)ev.push({date:d,kind,amount,label,seq:ev.length})};
  for(let m=month(t.baseline);m<=month(through);m=addMonth(m,1)){
+ for(const x of recurringIncomeAt(s,m))push(x.date,'bankIn',x.amount,x.label+'（固定収入予定）');
  for(const x of fixedAt(s,m).filter(x=>x.payment!=='credit'))push(x.date,x.payment+'Out',x.amount,x.label+'（定期予定）');
  const c=settlement(s,'card',m);push(c?.payDate||m+'-26','bankOut',c?c.amount:cardExpected(s,m),c?'カード確定額':'カード請求見込');
  const workMonth=addMonth(m,-1),w=settlement(s,'salary',workMonth);push(w?.payDate||m+'-25','bankIn',w?w.amount:wage(s,workMonth).total,w?'給与確定額（手取り）':'給与見込（控除前・交通費込）');
@@ -53,7 +54,7 @@ export function forecast(s,through){date(through);const t=s.settings;let bank=t.
  // Same-day refunds/income precede expenses. Real payment order may differ.
  ev.sort((a,b)=>a.date.localeCompare(b.date)||(a.kind.endsWith('In')?0:1)-(b.kind.endsWith('In')?0:1)||a.seq-b.seq);
  const events=[];for(const e of ev){if(e.kind==='paypayOut'){const n=Math.max(0,Math.ceil((e.amount-paypay)/5000));if(n){bank-=n*5000;paypay+=n*5000;auto+=n;events.push({date:e.date,kind:'transfer',amount:n*5000,label:'PayPayオートチャージ'})}paypay-=e.amount}else if(e.kind==='paypayIn')paypay+=e.amount;else if(e.kind==='bankIn')bank+=e.amount;else bank-=e.amount;events.push(e)}
- const m=month(through),reserve=t.savings+(m==='2026-12'?48000:m==='2027-01'?14000:0);return {bank,paypay,auto,events,reserve,available:bank-reserve};
+ const m=month(through),reserve=savingsGoal(s,m)+(m==='2026-12'?48000:m==='2027-01'?14000:0);return {bank,paypay,auto,events,reserve,available:bank-reserve};
 }
 export function parse(s,input,defaultDate=today()){
  check(typeof input==='string'&&input.length<=500,'入力は500文字以内です');let text=input.normalize('NFKC').trim(),d=defaultDate;
@@ -86,3 +87,22 @@ export function validateFixed(s){if(s.settings.fixedExpenses===undefined)return;
 export function saveFixed(s,id,revision,reason){str(reason,150);if(!s.settings.fixedExpenses)s.settings.fixedExpenses=defaultFixed();let item=id?s.settings.fixedExpenses.find(x=>x.id===id):null;check(!id||item,'固定支出が見つかりません');const before=item?copy(item):null;if(!item){item={id:uid(),revisions:[]};s.settings.fixedExpenses.push(item)}item.revisions=item.revisions.filter(x=>x.from!==revision.from);item.revisions.push(copy(revision));validateFixed(s);audit(s,'固定支出変更: '+reason,before,item);return item.id}
 export function monthlySpending(s,m,includeFixed=true){const categories=totals(s,m);if(includeFixed)for(const x of fixedAt(s,m))categories[x.category]=(categories[x.category]||0)+x.amount;return {categories,total:Object.values(categories).reduce((a,x)=>a+x,0)}}
 export function monthComparison(s,m,total,previous){if(addMonth(m,-1)<month(s.settings.baseline))return '前月比：比較データなし';if(previous===0)return total===0?'前月比 0円':'前月比 ＋'+total.toLocaleString('ja-JP')+'円（前月0円）';const delta=(total-previous)/previous*100;return '前月比 '+(delta>0?'＋':delta<0?'−':'')+Math.abs(delta).toFixed(1)+'%'}
+
+// Optional extensions keep existing v1.1–v1.3 backups readable.
+export function savingsGoal(s,m){return s.settings.monthlyGoals?.[ym(m)]??s.settings.savings}
+export function validatePlanning(s){
+ const t=s.settings;
+ if(t.monthlyGoals!==undefined){check(t.monthlyGoals&&typeof t.monthlyGoals==='object'&&!Array.isArray(t.monthlyGoals),'貯金目標が不正です');check(Object.keys(t.monthlyGoals).length<=1200,'貯金目標が多すぎます');for(const [m,v] of Object.entries(t.monthlyGoals)){ym(m);num(v)}}
+ if(t.recurringIncome===undefined)return;
+ check(Array.isArray(t.recurringIncome)&&t.recurringIncome.length<=200,'固定収入は200件までです');const ids=new Set();
+ for(const x of t.recurringIncome){str(x.id,80);check(/^[\w-]+$/.test(x.id)&&!ids.has(x.id),'固定収入IDが不正です');ids.add(x.id);check(Array.isArray(x.revisions)&&x.revisions.length>0&&x.revisions.length<=240,'固定収入履歴が不正です');const months=new Set();for(const r of x.revisions){ym(r.from);check(!months.has(r.from),'固定収入の適用月が重複しています');months.add(r.from);str(r.label);num(r.amount,1);num(r.day,1,31);check(typeof r.enabled==='boolean','固定収入の状態が不正です')}}
+}
+export function recurringIncomeAt(s,m){ym(m);return (s.settings.recurringIncome??[]).flatMap(x=>{const r=[...x.revisions].filter(r=>r.from<=m).sort((a,b)=>b.from.localeCompare(a.from))[0];if(!r?.enabled)return [];const d=m+'-'+String(Math.min(r.day,+endMonth(m).slice(-2))).padStart(2,'0');return d<s.settings.baseline?[]:[{...r,id:x.id,date:d}]})}
+export function saveIncome(s,id,revision){validatePlanning(s);s.settings.recurringIncome??=[];let x=id?s.settings.recurringIncome.find(x=>x.id===id):null;check(!id||x,'固定収入がありません');const old=x?copy(x):null;if(!x){x={id:uid(),revisions:[]};s.settings.recurringIncome.push(x)}x.revisions=x.revisions.filter(r=>r.from!==revision.from);x.revisions.push(copy(revision));validatePlanning(s);audit(s,'固定収入の変更',old,x)}
+export function spendingRoom(s,m){
+ const salary=settlement(s,'salary',addMonth(m,-1))?.amount??wage(s,addMonth(m,-1)).total;
+ const income=salary+recurringIncomeAt(s,m).reduce((a,x)=>a+x.amount,0)+s.records.filter(r=>r.kind==='income'&&month(r.date)===m).reduce((a,x)=>a+x.amount,0);
+ const expense=monthlySpending(s,m,true).total,goal=savingsGoal(s,m);
+ return {income,expense,goal,remaining:income-expense-goal};
+}
+export function cardPayDate(s,r){return settlement(s,'card',r.billMonth)?.payDate??r.billMonth+'-26'}
